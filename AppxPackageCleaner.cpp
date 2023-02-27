@@ -43,12 +43,12 @@ auto BuildCommandLine(std::string_view sv)
 
 std::string GetAppxPackage()
 {
-	constexpr auto command = "Get-AppxPackage -AllUsers -PackageTypeFilter Bundle | Select-Object Name, PackageFullName | ConvertTo-Json"sv;
+	constexpr auto command = "Get-AppxPackage -AllUsers -PackageTypeFilter Bundle | Select-Object Name, PackageFamilyName, PackageFullName | ConvertTo-Json"sv;
 	return RunCommand(BuildCommandLine(command), GetCurDir(), true);
 }
 
 
-void RemoveAppxPackage(std::string name)
+void RemoveAppxPackage(std::string_view name)
 {
 	constexpr auto fmt = R"(Get-AppxPackage -AllUsers -PackageTypeFilter Bundle -name "*{}*" | Remove-AppxPackage -AllUsers)"sv;
 	const auto command = std::format(fmt, name);
@@ -67,7 +67,6 @@ std::vector<std::map<std::string, std::string>> ParseJson(std::string jsonAsStr)
 
 
 std::vector<std::map<std::string, std::string>> packageList;
-HWND dataGrid;
 
 auto colName = std::to_array("Name");
 auto colPackageFullName = std::to_array("PackageFullName");
@@ -87,55 +86,77 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		CreateWindow("Button", "Update", WS_CHILD | WS_VISIBLE | BS_FLAT, 10, 10, 80, 25, hWnd, (HMENU)idUpdate, NULL, NULL);
 		CreateWindow("Button", "Remove", WS_CHILD | WS_VISIBLE | BS_FLAT, 100, 10, 80, 25, hWnd, (HMENU)idRemove, NULL, NULL);
 
-		dataGrid = CreateWindow(WC_LISTVIEW, "", WS_CHILD | WS_VISIBLE | WS_BORDER | LBS_NOTIFY | LVS_REPORT, 10, 50, 760, 340, hWnd, (HMENU)idGrid, NULL, NULL);
-
-		LVCOLUMN lvc = {};
-		lvc.mask = LVCF_FMT | LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM;
-		lvc.fmt = LVCFMT_LEFT;
-		lvc.cx = 150;
-		lvc.pszText = colName.data();
-		ListView_InsertColumn(dataGrid, 0, &lvc);
-
-		lvc.fmt = LVCFMT_LEFT;
-		lvc.cx = 600;
-		lvc.pszText = colPackageFullName.data();
-		ListView_InsertColumn(dataGrid, 1, &lvc);
+		CreateWindow(WC_LISTVIEW, "", WS_CHILD | WS_VISIBLE | WS_BORDER | LBS_NOTIFY | LVS_REPORT, 10, 50, 760, 340, hWnd, (HMENU)idGrid, NULL, NULL);
+		
 		EnableWindow(GetDlgItem(hWnd, idRemove), FALSE);
+
 		SendMessage(hWnd, WM_COMMAND, MAKEWPARAM(idUpdate, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(hWnd, idUpdate)));
+
 		break;
 	}
 	case WM_COMMAND:
 	{
 		int wmId = LOWORD(wParam);
+
+		auto pGrid = GetDlgItem(hWnd, idGrid);
 		switch (wmId)
 		{
 		case idUpdate:
 		{
 			packageList = ParseJson(GetAppxPackage());
-
-			ListView_DeleteAllItems(dataGrid);
-			for (int i = 0; i < packageList.size(); i++)
+			
+			// Clear all columns and items from the list view control
+			ListView_DeleteAllItems(pGrid);
+			for (auto count = Header_GetItemCount(ListView_GetHeader(pGrid)); count; --count)
 			{
-				LVITEM lv = { 0 };
-				lv.mask = LVIF_TEXT;
-				lv.pszText = va(packageList[i][colName.data()]);
-				lv.iItem = i;
-				lv.iSubItem = 0;
-				ListView_InsertItem(dataGrid, &lv);
-
-				ListView_SetItemText(dataGrid, i, 1, packageList[i][colPackageFullName.data()].data());
+				ListView_DeleteColumn(pGrid, 0);
 			}
-			// Automatically resize the first column to fit the contents
-			ListView_SetColumnWidth(dataGrid, 0, LVSCW_AUTOSIZE);
+
+			// Add columns based on the keys in the first package map
+			if (!packageList.empty())
+			{
+				int i = 0;
+				auto&& lvCol = LV_COLUMN{ .mask = LVCF_FMT | LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM, .fmt = LVCFMT_LEFT, .cx = 150 };
+				for (auto&& key : packageList.front() | std::views::keys)
+				{
+					lvCol.pszText = va(key);
+					ListView_InsertColumn(pGrid, i++, &lvCol);
+				}
+			}
+			// Add items to the list view control based on packageList
+			for (int iCol = 0; iCol < packageList.size(); iCol++)
+			{
+				auto&& package = packageList[iCol];
+				for (int iRow = 0; auto&& value : package | std::views::values)
+				{
+					if (iRow == 0)
+					{
+						auto&& lv = LVITEM{ .mask = LVIF_TEXT, .iItem = iCol, .iSubItem = iRow, .pszText = va(value) };
+						ListView_InsertItem(pGrid, &lv);
+					}
+					else
+					{
+						ListView_SetItemText(pGrid, iCol, iRow, value.data());
+					}
+					++iRow;
+				}
+			}
+			// Resize the columns to fit the contents
+			int colCount = Header_GetItemCount(ListView_GetHeader(pGrid));
+			for (int i = 0; i < colCount; i++)
+			{
+				ListView_SetColumnWidth(pGrid, i, LVSCW_AUTOSIZE);
+			}
+
 			break;
 		}
 		case idRemove:
 		{
-			if (auto i = ListView_GetSelectionMark(dataGrid); i != LB_ERR)
+			if (auto i = ListView_GetSelectionMark(pGrid); i != LB_ERR)
 			{
 				RemoveAppxPackage(packageList[i][colName.data()]);
 				// Remove the selected item from the list
-				ListView_DeleteItem(dataGrid, i);
+				ListView_DeleteItem(pGrid, i);
 				packageList.erase(packageList.begin() + i);
 			}
 			break;
@@ -150,7 +171,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		int width = LOWORD(lParam);
 		int height = HIWORD(lParam);
 
-		MoveWindow(dataGrid, 10, 50, width - 20, height - 60, TRUE);
+		auto pGrid = GetDlgItem(hWnd, idGrid);
+		MoveWindow(pGrid, 10, 50, width - 20, height - 60, TRUE);
 		break;
 	}
 	case WM_NOTIFY:
@@ -199,7 +221,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	};
 	RegisterClassEx(&wcex);
 
-	const HWND hWnd = CreateWindow("PackageManagerClass", "AppxFuckage", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, 800, 450, NULL, NULL, hInstance, NULL);
+	const HWND hWnd = CreateWindow("PackageManagerClass", "AppxPackageCleaner", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, 800, 450, NULL, NULL, hInstance, NULL);
 	if (!hWnd)
 	{
 		return 1;
