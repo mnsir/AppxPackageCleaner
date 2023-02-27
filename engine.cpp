@@ -42,8 +42,8 @@ private:
 // Run a console command, with optional redirection of stdout and stderr to our log
 std::string RunCommand(std::string_view cmd, std::string_view dir, bool log)
 {
-	constexpr DWORD dwPipeSize = 4096;
-	STARTUPINFOA si = { .cb = sizeof(si) };
+	constexpr DWORD dwPipeSize = 4096*8;
+	STARTUPINFO si = { .cb = sizeof(si) };
 	PROCESS_INFORMATION pi = {};
 	PipeHandle hOutputRead;
 	PipeHandle hOutputWrite;
@@ -51,13 +51,13 @@ std::string RunCommand(std::string_view cmd, std::string_view dir, bool log)
 
 	if (log)
 	{
-		SECURITY_ATTRIBUTES sa = { .nLength = static_cast<DWORD>(sizeof(sa)), .lpSecurityDescriptor = nullptr, .bInheritHandle = TRUE };
+		SECURITY_ATTRIBUTES sa = { .nLength = static_cast<DWORD>(sizeof sa), .lpSecurityDescriptor = nullptr, .bInheritHandle = TRUE };
 		// NB: The size of a pipe is a suggestion, NOT an absolute guarantee
 		// This means that you may get a pipe of 4K even if you requested 1K
 		if (!CreatePipe(&hOutputRead.get(), &hOutputWrite.get(), &sa, dwPipeSize))
 		{
 			SysError(std::format("Could not set commandline pipe: {}"sv, GetLastError()));
-			goto out;
+			return output;
 		}
 		si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES | STARTF_PREVENTPINNING | STARTF_TITLEISAPPID;
 		si.wShowWindow = SW_HIDE;
@@ -68,7 +68,7 @@ std::string RunCommand(std::string_view cmd, std::string_view dir, bool log)
 	if (!CreateProcess(nullptr, va(cmd), nullptr, nullptr, TRUE, NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW, nullptr, dir.data(), &si, &pi))
 	{
 		SysError(std::format("Unable to launch command '{}': {}", cmd, GetLastError()));
-		goto out;
+		return output;
 	}
 
 	if (log)
@@ -81,12 +81,13 @@ std::string RunCommand(std::string_view cmd, std::string_view dir, bool log)
 			{
 				if (dwAvail != 0)
 				{
-					//output = malloc(dwAvail + 1);
 					DWORD dwRead;
-					std::array<char, 4096> buf{};
+					std::array<char, dwPipeSize> buf{};
+					//output = malloc(dwAvail + 1);
+					//std::unique_ptr<char[]> buf(new char[dwAvail + 1]);
 					if (ReadFile(hOutputRead.get(), buf.data(), dwAvail, &dwRead, nullptr) && dwRead != 0)
 					{
-						//output[dwAvail] = 0;
+						//buf[dwAvail] = '\0';
 						// coverity[tainted_string]
 						//uprintf(output);
 						output.assign(buf.data(), dwRead);
@@ -109,8 +110,7 @@ std::string RunCommand(std::string_view cmd, std::string_view dir, bool log)
 		ret = GetLastError();
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
-
-out:
+	
 	return output;
 }
 
