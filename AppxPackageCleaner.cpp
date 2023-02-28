@@ -75,6 +75,15 @@ auto colPackageFullName = std::to_array("PackageFullName");
 constexpr auto idUpdate = 1;
 constexpr auto idRemove = 2;
 constexpr auto idGrid = 3;
+constexpr auto idList = 4;
+
+constexpr auto windowWidth = 800;
+constexpr auto windowHeight = 450;
+
+constexpr auto buttonWidth = 80;
+constexpr auto buttonHeight = 25;
+
+constexpr auto margin = 10;
 
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -83,10 +92,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_CREATE:
 	{
-		CreateWindow("Button", "Update", WS_CHILD | WS_VISIBLE | BS_FLAT, 10, 10, 80, 25, hWnd, (HMENU)idUpdate, NULL, NULL);
-		CreateWindow("Button", "Remove", WS_CHILD | WS_VISIBLE | BS_FLAT, 100, 10, 80, 25, hWnd, (HMENU)idRemove, NULL, NULL);
+		auto [b1, b2, g1, g2, l1, l2] = DivideSegment(windowHeight, margin, 15, buttonHeight, 0.5);
 
-		CreateWindow(WC_LISTVIEW, "", WS_CHILD | WS_VISIBLE | WS_BORDER | LBS_NOTIFY | LVS_REPORT, 10, 50, 760, 340, hWnd, (HMENU)idGrid, NULL, NULL);
+		CreateWindow("Button", "Update", WS_CHILD | WS_VISIBLE | BS_FLAT, 10, b1, buttonWidth, b2, hWnd, (HMENU)idUpdate, NULL, NULL);
+		CreateWindow("Button", "Remove", WS_CHILD | WS_VISIBLE | BS_FLAT, 100, b1, buttonWidth, b2, hWnd, (HMENU)idRemove, NULL, NULL);
+
+		CreateWindow(WC_LISTVIEW, "", WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT, 10, g1, 760, g2, hWnd, (HMENU)idGrid, NULL, NULL);
+
+		CreateWindow(WC_LISTBOX, "", WS_CHILD | WS_VISIBLE | WS_BORDER | LBS_STANDARD, 10, l1, 760, l2, hWnd, (HMENU)idList, NULL, NULL);
 		
 		EnableWindow(GetDlgItem(hWnd, idRemove), FALSE);
 
@@ -171,8 +184,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		int width = LOWORD(lParam);
 		int height = HIWORD(lParam);
 
+		auto [b1, b2, yPos, g2, l1, l2] = DivideSegment(height, margin, 15, buttonHeight, 0.5);
+
 		auto pGrid = GetDlgItem(hWnd, idGrid);
-		MoveWindow(pGrid, 10, 50, width - 20, height - 60, TRUE);
+		MoveWindow(pGrid, 10, yPos, width - 20, g2, TRUE);
+		auto pList = GetDlgItem(hWnd, idList);
+		MoveWindow(pList, 10, l1, width - 20, l2, TRUE);
 		break;
 	}
 	case WM_NOTIFY:
@@ -221,7 +238,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	};
 	RegisterClassEx(&wcex);
 
-	const HWND hWnd = CreateWindow("PackageManagerClass", "AppxPackageCleaner", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, 800, 450, NULL, NULL, hInstance, NULL);
+	const HWND hWnd = CreateWindow("PackageManagerClass", "AppxPackageCleaner", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, windowWidth, windowHeight, NULL, NULL, hInstance, NULL);
 	if (!hWnd)
 	{
 		return 1;
