@@ -5,7 +5,7 @@
 #include <string_view>
 #include <vector>
 
-//#include <Windows.h>
+#include <Windowsx.h>
 #include <wtypes.h>
 #include <minwindef.h>
 #include <WinUser.h>
@@ -56,6 +56,15 @@ void RemoveAppxPackage(std::string_view name)
 }
 
 
+std::string LoadUpdates(std::string_view packageFamilyName)
+{
+	//constexpr auto fmt = R"((Invoke-WebRequest -UseBasicParsing https://store.rg-adguard.net/api/GetFiles -ContentType "application/x-www-form-urlencoded" -Method POST -Body @{{type='PackageFamilyName';url='{}';ring='RP';lang='ru-RU'}}).Links | Select-Object @{{Name="href"; Expression={{$_.href}}}}, @{{Name="text"; Expression={{$_.outerHTML -replace "<.*?>"}}}} | ConvertTo-Json)"sv;
+	constexpr auto fmt = R"((Invoke-WebRequest -UseBasicParsing https://store.rg-adguard.net/api/GetFiles -ContentType "application/x-www-form-urlencoded" -Method POST -Body @{{type='PackageFamilyName';url='{}';ring='RP';lang='ru-RU'}}).Links | Select-Object @{{Name='href'; Expression={{$_.href}}}}, @{{Name='text'; Expression={{$_.outerHTML -replace '<.*?>'}}}} | ConvertTo-Json)"sv;
+	const auto command = std::format(fmt, packageFamilyName);
+	return RunCommand(BuildCommandLine(command), GetCurDir(), true);
+}
+
+
 std::vector<std::map<std::string, std::string>> ParseJson(std::string jsonAsStr)
 {
 	std::istringstream ss(std::move(jsonAsStr));
@@ -69,6 +78,7 @@ std::vector<std::map<std::string, std::string>> ParseJson(std::string jsonAsStr)
 std::vector<std::map<std::string, std::string>> packageList;
 
 auto colName = std::to_array("Name");
+auto colPackageFamilyName = std::to_array("PackageFamilyName");
 auto colPackageFullName = std::to_array("PackageFullName");
 
 
@@ -76,6 +86,7 @@ constexpr auto idUpdate = 1;
 constexpr auto idRemove = 2;
 constexpr auto idGrid = 3;
 constexpr auto idList = 4;
+constexpr auto idLoadUpdates = 5;
 
 constexpr auto windowWidth = 800;
 constexpr auto windowHeight = 450;
@@ -94,13 +105,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	{
 		auto [b1, b2, g1, g2, l1, l2] = DivideSegment(windowHeight, margin, 15, buttonHeight, 0.5);
 
-		CreateWindow("Button", "Update", WS_CHILD | WS_VISIBLE | BS_FLAT, 10, b1, buttonWidth, b2, hWnd, (HMENU)idUpdate, NULL, NULL);
-		CreateWindow("Button", "Remove", WS_CHILD | WS_VISIBLE | BS_FLAT, 100, b1, buttonWidth, b2, hWnd, (HMENU)idRemove, NULL, NULL);
+		CreateWindow(WC_BUTTON, "Update", WS_CHILD | WS_VISIBLE, 10, b1, buttonWidth, b2, hWnd, (HMENU)idUpdate, NULL, NULL);
+		CreateWindow(WC_BUTTON, "Remove", WS_CHILD | WS_VISIBLE, 100, b1, buttonWidth, b2, hWnd, (HMENU)idRemove, NULL, NULL);
+		CreateWindow(WC_BUTTON, "Load Updates", WS_CHILD | WS_VISIBLE, 190, b1, buttonWidth, b2, hWnd, (HMENU)idLoadUpdates, NULL, NULL);
 
 		CreateWindow(WC_LISTVIEW, "", WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT, 10, g1, 760, g2, hWnd, (HMENU)idGrid, NULL, NULL);
 
-		CreateWindow(WC_LISTBOX, "", WS_CHILD | WS_VISIBLE | WS_BORDER | LBS_STANDARD, 10, l1, 760, l2, hWnd, (HMENU)idList, NULL, NULL);
-		
+		CreateWindow(WC_LISTBOX, "", WS_CHILD | WS_VISIBLE | WS_BORDER | LBS_NOTIFY, 10, l1, 760, l2, hWnd, (HMENU)idList, NULL, NULL);
+
 		EnableWindow(GetDlgItem(hWnd, idRemove), FALSE);
 
 		SendMessage(hWnd, WM_COMMAND, MAKEWPARAM(idUpdate, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(hWnd, idUpdate)));
@@ -117,7 +129,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		case idUpdate:
 		{
 			packageList = ParseJson(GetAppxPackage());
-			
+
 			// Clear all columns and items from the list view control
 			ListView_DeleteAllItems(pGrid);
 			for (auto count = Header_GetItemCount(ListView_GetHeader(pGrid)); count; --count)
@@ -140,7 +152,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			for (int iCol = 0; iCol < packageList.size(); iCol++)
 			{
 				auto&& package = packageList[iCol];
-				for (int iRow = 0; auto&& value : package | std::views::values)
+				for (int iRow = 0; auto && value : package | std::views::values)
 				{
 					if (iRow == 0)
 					{
@@ -171,6 +183,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 				// Remove the selected item from the list
 				ListView_DeleteItem(pGrid, i);
 				packageList.erase(packageList.begin() + i);
+			}
+			break;
+		}
+		case idLoadUpdates:
+		{
+			if (auto i = ListView_GetSelectionMark(pGrid); i != LB_ERR)
+			{
+				auto&& str = LoadUpdates(packageList[i][colPackageFamilyName.data()]);
+				auto hList = GetDlgItem(hWnd, idList);
+				ListBox_ResetContent(hList);
+				std::istringstream is(std::move(str));
+				for (std::string s; std::getline(is, s);)
+					ListBox_AddString(hList, s.c_str());
 			}
 			break;
 		}
