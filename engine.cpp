@@ -42,7 +42,7 @@ private:
 // Run a console command, with optional redirection of stdout and stderr to our log
 std::string RunCommand(std::string_view cmd, std::string_view dir, bool log)
 {
-	constexpr DWORD dwPipeSize = 4096*8;
+	constexpr DWORD dwPipeSize = 4096*9;
 	STARTUPINFO si = { .cb = sizeof(si) };
 	PROCESS_INFORMATION pi = {};
 	PipeHandle hOutputRead;
@@ -90,6 +90,7 @@ std::string RunCommand(std::string_view cmd, std::string_view dir, bool log)
 						//buf[dwAvail] = '\0';
 						// coverity[tainted_string]
 						//uprintf(output);
+						std::string str(buf.begin(), buf.end());
 						output.assign(buf.data(), dwRead);
 					}
 					//free(output);

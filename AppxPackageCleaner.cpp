@@ -11,6 +11,7 @@
 #include <WinUser.h>
 #include <CommCtrl.h>
 #include <shlobj.h>
+#include <variant>
 
 #include "engine.h"
 #include "json.hpp"
@@ -75,7 +76,74 @@ std::vector<std::map<std::string, std::string>> ParseJson(std::string jsonAsStr)
 }
 
 
+std::map<std::string, std::string> ParseJson2(std::string jsonAsStr)
+{
+	std::map<std::string, std::string> resultMap;
+	auto&& jsonObj = nlohmann::json::parse(std::move(jsonAsStr));
+
+	for (auto&& item : jsonObj)
+	{
+		resultMap[item["text"]] = item["href"];
+	}
+
+	return resultMap;
+}
+
+std::vector<std::map<std::string, std::variant<std::string, int, bool, std::vector<std::string>>>> ParseJson3(std::string jsonAsStr)
+{
+	// Распарсить JSON
+	auto parsedJson = nlohmann::json::parse(std::move(jsonAsStr));
+
+	// Создать вектор карт
+	std::vector<std::map<std::string, std::variant<std::string, int, bool, std::vector<std::string>>>> result;
+
+	// Пройти по каждому объекту в JSON и добавить его в вектор карт
+	for (auto&& obj : parsedJson)
+	{
+		std::map<std::string, std::variant<std::string, int, bool, std::vector<std::string>>> item;
+
+		// Пройти по каждому полю объекта и добавить его в карту
+		for (auto it = obj.begin(); it != obj.end(); ++it)
+		{
+			auto && key = it.key();
+			auto&& value = it.value();
+
+
+			// Определить тип значения поля и добавить его в карту
+			if (value.is_string())
+			{
+				item[key] = value.get<std::string>();
+			}
+			else if (value.is_number())
+			{
+				item[key] = value.get<int>();
+			}
+			else if (value.is_boolean())
+			{
+				item[key] = value.get<bool>();
+			}
+			else if (value.is_array())
+			{
+				std::vector<std::string> vec;
+				for (const auto& str : value)
+				{
+					vec.push_back(str.get<std::string>());
+				}
+				item[key] = vec;
+			}
+		}
+
+		// Добавить карту в вектор
+		result.push_back(item);
+	}
+
+	return result;
+}
+
+
+
 std::vector<std::map<std::string, std::string>> packageList;
+std::map<std::string, std::map<std::string, std::string>> updates;
 
 auto colName = std::to_array("Name");
 auto colPackageFamilyName = std::to_array("PackageFamilyName");
@@ -113,7 +181,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 		CreateWindow(WC_LISTBOX, "", WS_CHILD | WS_VISIBLE | WS_BORDER | LBS_NOTIFY, 10, l1, 760, l2, hWnd, (HMENU)idList, NULL, NULL);
 
-		EnableWindow(GetDlgItem(hWnd, idRemove), FALSE);
+		Button_Enable(GetDlgItem(hWnd, idRemove), FALSE);
+		Button_Enable(GetDlgItem(hWnd, idLoadUpdates), FALSE);
 
 		SendMessage(hWnd, WM_COMMAND, MAKEWPARAM(idUpdate, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(hWnd, idUpdate)));
 
@@ -123,13 +192,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	{
 		int wmId = LOWORD(wParam);
 
-		auto pGrid = GetDlgItem(hWnd, idGrid);
 		switch (wmId)
 		{
 		case idUpdate:
 		{
 			packageList = ParseJson(GetAppxPackage());
 
+			auto pGrid = GetDlgItem(hWnd, idGrid);
 			// Clear all columns and items from the list view control
 			ListView_DeleteAllItems(pGrid);
 			for (auto count = Header_GetItemCount(ListView_GetHeader(pGrid)); count; --count)
@@ -177,6 +246,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		}
 		case idRemove:
 		{
+			auto pGrid = GetDlgItem(hWnd, idGrid);
 			if (auto i = ListView_GetSelectionMark(pGrid); i != LB_ERR)
 			{
 				RemoveAppxPackage(packageList[i][colName.data()]);
@@ -188,14 +258,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		}
 		case idLoadUpdates:
 		{
+			auto pGrid = GetDlgItem(hWnd, idGrid);
 			if (auto i = ListView_GetSelectionMark(pGrid); i != LB_ERR)
 			{
-				auto&& str = LoadUpdates(packageList[i][colPackageFamilyName.data()]);
 				auto hList = GetDlgItem(hWnd, idList);
 				ListBox_ResetContent(hList);
-				std::istringstream is(std::move(str));
-				for (std::string s; std::getline(is, s);)
-					ListBox_AddString(hList, s.c_str());
+				auto&& package = packageList[i];
+				auto&& json = LoadUpdates(package[colPackageFamilyName.data()]);
+				auto&& fileNamesToLinks = ParseJson2(json);
+				for (auto&& fileNames : fileNamesToLinks | std::views::keys)
+					ListBox_AddString(hList, fileNames.c_str());
+				updates[package[colName.data()]] = std::move(fileNamesToLinks);
 			}
 			break;
 		}
@@ -211,10 +284,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 		auto [b1, b2, yPos, g2, l1, l2] = DivideSegment(height, margin, 15, buttonHeight, 0.5);
 
-		auto pGrid = GetDlgItem(hWnd, idGrid);
-		MoveWindow(pGrid, 10, yPos, width - 20, g2, TRUE);
-		auto pList = GetDlgItem(hWnd, idList);
-		MoveWindow(pList, 10, l1, width - 20, l2, TRUE);
+		auto hGrid = GetDlgItem(hWnd, idGrid);
+		MoveWindow(hGrid, 10, yPos, width - 20, g2, TRUE);
+		auto hList = GetDlgItem(hWnd, idList);
+		MoveWindow(hList, 10, l1, width - 20, l2, TRUE);
 		break;
 	}
 	case WM_NOTIFY:
@@ -225,11 +298,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			auto* pNMLV = reinterpret_cast<NMLISTVIEW*>(lParam);
 			if ((pNMLV->uNewState & LVIS_SELECTED) != 0)
 			{
-				EnableWindow(GetDlgItem(hWnd, idRemove), TRUE);
+				Button_Enable(GetDlgItem(hWnd, idRemove), TRUE);
+				Button_Enable(GetDlgItem(hWnd, idLoadUpdates), TRUE);
+				auto hList = GetDlgItem(hWnd, idList);
+				ListBox_ResetContent(hList);
+				auto&& packageName = packageList[pNMLV->iItem][colName.data()];
+				for (auto&& fileNames : updates[packageName] | std::views::keys)
+					ListBox_AddString(hList, fileNames.c_str());
 			}
 			else
 			{
-				EnableWindow(GetDlgItem(hWnd, idRemove), FALSE);
+				Button_Enable(GetDlgItem(hWnd, idRemove), FALSE);
+				Button_Enable(GetDlgItem(hWnd, idLoadUpdates), FALSE);
+				auto hList = GetDlgItem(hWnd, idList);
+				ListBox_ResetContent(hList);
 			}
 		}
 		break;
