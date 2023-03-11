@@ -4,18 +4,58 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <variant>
 
 #include <Windowsx.h>
 #include <wtypes.h>
-#include <minwindef.h>
 #include <WinUser.h>
 #include <CommCtrl.h>
 #include <shlobj.h>
-#include <variant>
 
 #include "engine.h"
 #include "json.hpp"
 #include "utils.h"
+
+#undef max
+
+
+template<typename CharT>
+struct std::formatter<std::variant<std::string, int, bool, std::vector<std::string>>, CharT> : std::formatter<std::string, CharT> {
+	template<typename FormatContext>
+	auto format(const std::variant<std::string, int, bool, std::vector<std::string>>& value, FormatContext& ctx) {
+		if (std::holds_alternative<std::string>(value)) {
+			return formatter<std::string, CharT>::format(std::get<std::string>(value), ctx);
+		}
+		else if (std::holds_alternative<int>(value)) {
+			return format_to(ctx.out(), "{}", std::get<int>(value));
+		}
+		else if (std::holds_alternative<bool>(value)) {
+			return format_to(ctx.out(), "{}", std::get<bool>(value));
+		}
+		else if (std::holds_alternative<std::vector<std::string>>(value)) {
+			auto& vec = std::get<std::vector<std::string>>(value);
+			auto it = vec.begin();
+			auto end = vec.end();
+			if (it == end) {
+				return format_to(ctx.out(), "[]");
+			}
+			else {
+				format_to(ctx.out(), "[");
+				while (it != end) {
+					formatter<std::string, CharT>::format(*it, ctx);
+					++it;
+					if (it != end) {
+						format_to(ctx.out(), ", ");
+					}
+				}
+				format_to(ctx.out(), "]");
+				return ctx.out();
+			}
+		}
+		return ctx.out();
+	}
+};
+
 
 using namespace std::string_view_literals;
 
@@ -41,10 +81,9 @@ auto BuildCommandLine(std::string_view sv)
 }
 
 
-
 std::string GetAppxPackage()
 {
-	constexpr auto command = "Get-AppxPackage -AllUsers -PackageTypeFilter Bundle | Select-Object Name, PackageFamilyName, PackageFullName | ConvertTo-Json"sv;
+	constexpr auto command = "Get-AppxPackage -AllUsers -PackageTypeFilter Bundle | ConvertTo-Json"sv;
 	return RunCommand(BuildCommandLine(command), GetCurDir(), true);
 }
 
@@ -53,116 +92,175 @@ void RemoveAppxPackage(std::string_view name)
 {
 	constexpr auto fmt = R"(Get-AppxPackage -AllUsers -PackageTypeFilter Bundle -name "*{}*" | Remove-AppxPackage -AllUsers)"sv;
 	const auto command = std::format(fmt, name);
-	RunCommand(BuildCommandLine(command), GetCurDir(), true);
+	RunCommand(BuildCommandLine(command), GetCurDir(), false);
 }
 
 
 std::string LoadUpdates(std::string_view packageFamilyName)
 {
-	//constexpr auto fmt = R"((Invoke-WebRequest -UseBasicParsing https://store.rg-adguard.net/api/GetFiles -ContentType "application/x-www-form-urlencoded" -Method POST -Body @{{type='PackageFamilyName';url='{}';ring='RP';lang='ru-RU'}}).Links | Select-Object @{{Name="href"; Expression={{$_.href}}}}, @{{Name="text"; Expression={{$_.outerHTML -replace "<.*?>"}}}} | ConvertTo-Json)"sv;
 	constexpr auto fmt = R"((Invoke-WebRequest -UseBasicParsing https://store.rg-adguard.net/api/GetFiles -ContentType "application/x-www-form-urlencoded" -Method POST -Body @{{type='PackageFamilyName';url='{}';ring='RP';lang='ru-RU'}}).Links | Select-Object @{{Name='href'; Expression={{$_.href}}}}, @{{Name='text'; Expression={{$_.outerHTML -replace '<.*?>'}}}} | ConvertTo-Json)"sv;
 	const auto command = std::format(fmt, packageFamilyName);
 	return RunCommand(BuildCommandLine(command), GetCurDir(), true);
 }
 
 
-std::vector<std::map<std::string, std::string>> ParseJson(std::string jsonAsStr)
+auto AddAppxPackage(std::string_view href)
 {
-	std::istringstream ss(std::move(jsonAsStr));
-	nlohmann::json json;
-	ss >> json;
-	auto view = json | std::views::transform([](auto&& item) {return item.get<std::map<std::string, std::string>>(); });
-	return { view.begin(), view.end() };
+	constexpr auto fmt = "Add-AppxPackage -Path '{}'"sv;
+	const auto command = std::format(fmt, href);
+	return RunCommand(BuildCommandLine(command), GetCurDir(), true);
 }
 
 
-std::map<std::string, std::string> ParseJson2(std::string jsonAsStr)
+std::vector<std::pair<std::string, std::string>> ParseJson2(std::string jsonAsStr)
 {
-	std::map<std::string, std::string> resultMap;
-	auto&& jsonObj = nlohmann::json::parse(std::move(jsonAsStr));
+	std::vector<std::pair<std::string, std::string>> resultMap;
 
-	for (auto&& item : jsonObj)
-	{
-		resultMap[item["text"]] = item["href"];
+	try {
+		auto&& jsonObj = nlohmann::json::parse(std::move(jsonAsStr));
+
+		for (auto&& item : jsonObj)
+		{
+			resultMap.emplace_back(item["text"], item["href"]);
+		}
 	}
-
+	catch (const std::exception& e)
+	{
+		::MessageBox(NULL, e.what(), __FUNCTION__, 0);
+	}
 	return resultMap;
 }
 
+
 std::vector<std::map<std::string, std::variant<std::string, int, bool, std::vector<std::string>>>> ParseJson3(std::string jsonAsStr)
 {
-	// Распарсить JSON
-	auto parsedJson = nlohmann::json::parse(std::move(jsonAsStr));
-
-	// Создать вектор карт
 	std::vector<std::map<std::string, std::variant<std::string, int, bool, std::vector<std::string>>>> result;
 
-	// Пройти по каждому объекту в JSON и добавить его в вектор карт
-	for (auto&& obj : parsedJson)
-	{
-		std::map<std::string, std::variant<std::string, int, bool, std::vector<std::string>>> item;
+	try {
+		auto parsedJson = nlohmann::json::parse(std::move(jsonAsStr));
 
-		// Пройти по каждому полю объекта и добавить его в карту
-		for (auto it = obj.begin(); it != obj.end(); ++it)
+		for (auto&& obj : parsedJson)
 		{
-			auto && key = it.key();
-			auto&& value = it.value();
+			std::map<std::string, std::variant<std::string, int, bool, std::vector<std::string>>> item;
+
+			for (auto it = obj.begin(); it != obj.end(); ++it)
+			{
+				auto&& key = it.key();
+				auto&& value = it.value();
 
 
-			// Определить тип значения поля и добавить его в карту
-			if (value.is_string())
-			{
-				item[key] = value.get<std::string>();
-			}
-			else if (value.is_number())
-			{
-				item[key] = value.get<int>();
-			}
-			else if (value.is_boolean())
-			{
-				item[key] = value.get<bool>();
-			}
-			else if (value.is_array())
-			{
-				std::vector<std::string> vec;
-				for (const auto& str : value)
+				if (value.is_string())
 				{
-					vec.push_back(str.get<std::string>());
+					item[key] = value.get<std::string>();
 				}
-				item[key] = vec;
+				else if (value.is_number())
+				{
+					item[key] = value.get<int>();
+				}
+				else if (value.is_boolean())
+				{
+					item[key] = value.get<bool>();
+				}
+				else if (value.is_array())
+				{
+					std::vector<std::string> vec;
+					for (auto&& str : value)
+					{
+						vec.push_back(str.get<std::string>());
+					}
+					item[key] = vec;
+				}
 			}
+
+			result.push_back(item);
 		}
-
-		// Добавить карту в вектор
-		result.push_back(item);
 	}
-
+	catch (const std::exception& e)
+	{
+		::MessageBox(NULL, e.what(), __FUNCTION__, 0);
+	}
 	return result;
 }
 
 
-
-std::vector<std::map<std::string, std::string>> packageList;
-std::map<std::string, std::map<std::string, std::string>> updates;
+std::vector<std::map<std::string, std::variant<std::string, int, bool, std::vector<std::string>>>> packageList;
+std::map<std::string, std::vector<std::pair<std::string, std::string>>> updates;
 
 auto colName = std::to_array("Name");
 auto colPackageFamilyName = std::to_array("PackageFamilyName");
 auto colPackageFullName = std::to_array("PackageFullName");
 
 
-constexpr auto idUpdate = 1;
-constexpr auto idRemove = 2;
-constexpr auto idGrid = 3;
-constexpr auto idList = 4;
-constexpr auto idLoadUpdates = 5;
+constexpr auto ID_GET_APPX_PACKAGE = 10;
+constexpr auto idRemoveAppxPackage = 2;
+constexpr auto idPackagesList = 3;
+constexpr auto idLoadPackageUpdates = 5;
+constexpr auto idPackageInfo = 7;
+constexpr auto idPackageUpdates = 8;
+constexpr auto idAddAppxPackage = 9;
 
-constexpr auto windowWidth = 800;
-constexpr auto windowHeight = 450;
+auto windowX = CW_USEDEFAULT;
+auto windowY = 0;
+auto windowWidth = 800;
+auto windowHeight = 450;
 
 constexpr auto buttonWidth = 80;
 constexpr auto buttonHeight = 25;
 
+constexpr auto buttonWidthLong = 120;
+
 constexpr auto margin = 10;
+constexpr auto interval = 15;
+
+
+namespace ui
+{
+	void ListView_Reset(HWND hListView)
+	{
+		ListView_DeleteAllItems(hListView);
+		for (auto count = Header_GetItemCount(ListView_GetHeader(hListView)); count; --count)
+			ListView_DeleteColumn(hListView, 0);
+	}
+
+	void ListView_CreateColumns(HWND hListView, std::vector<std::string> names)
+	{
+		auto&& lvCol = LV_COLUMN{ .mask = LVCF_FMT | LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM, .fmt = LVCFMT_LEFT, .cx = 0 };
+		for (int i = 0; auto && name : names)
+		{
+			lvCol.pszText = name.data();
+			ListView_InsertColumn(hListView, i++, &lvCol);
+		}
+	}
+
+	void ListView_AppendRow(HWND hListView, std::vector<std::vector<std::string>> table)
+	{
+		for (auto&& values : table)
+		{
+			int iRow = ListView_GetItemCount(hListView);
+			for (int iCol : std::views::iota(0, static_cast<int>(values.size())))
+			{
+				if (iCol == 0)
+				{
+					auto&& lv = LVITEM{ .mask = LVIF_TEXT, .iItem = iRow, .iSubItem = iCol, .pszText = values[iCol].data() };
+					ListView_InsertItem(hListView, &lv);
+				}
+				else
+				{
+					ListView_SetItemText(hListView, iRow, iCol, values[iCol].data());
+				}
+			}
+		}
+	}
+
+	void ListView_SetAutoSize(HWND hListView)
+	{
+		for (auto i : std::views::iota(0, Header_GetItemCount(ListView_GetHeader(hListView))))
+			ListView_SetColumnWidth(hListView, i, LVSCW_AUTOSIZE);
+	}
+}
+
+
+const UINT WM_GET_APPX_PACKAGE = RegisterWindowMessage(TEXT("GET_APPX_PACKAGE"));
 
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -171,104 +269,104 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_CREATE:
 	{
-		auto [b1, b2, g1, g2, l1, l2] = DivideSegment(windowHeight, margin, 15, buttonHeight, 0.5);
+		constexpr auto gridDefault = WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT;
+		constexpr auto gridSingleRow = gridDefault | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOCOLUMNHEADER;
 
-		CreateWindow(WC_BUTTON, "Update", WS_CHILD | WS_VISIBLE, 10, b1, buttonWidth, b2, hWnd, (HMENU)idUpdate, NULL, NULL);
-		CreateWindow(WC_BUTTON, "Remove", WS_CHILD | WS_VISIBLE, 100, b1, buttonWidth, b2, hWnd, (HMENU)idRemove, NULL, NULL);
-		CreateWindow(WC_BUTTON, "Load Updates", WS_CHILD | WS_VISIBLE, 190, b1, buttonWidth, b2, hWnd, (HMENU)idLoadUpdates, NULL, NULL);
+		auto [left, right] = DivideSegment(Segment{ windowWidth }, Relative{ 3 }, Relative{ 7 });
 
-		CreateWindow(WC_LISTVIEW, "", WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT, 10, g1, 760, g2, hWnd, (HMENU)idGrid, NULL, NULL);
+		auto [g] = DivideSegment(Segment{ windowHeight }, Relative{ 1 });
+		CreateWindow(WC_LISTVIEW, "", gridSingleRow, left.pos, g.pos, left.len, g.len, hWnd, (HMENU)idPackagesList, NULL, NULL);
 
-		CreateWindow(WC_LISTBOX, "", WS_CHILD | WS_VISIBLE | WS_BORDER | LBS_NOTIFY, 10, l1, 760, l2, hWnd, (HMENU)idList, NULL, NULL);
+		auto [a, b, c, d] = DivideSegment(Segment{ windowHeight }, Absolute{ buttonHeight }, Relative{ 4 }, Absolute{ buttonHeight }, Relative{ 6 });
+		CreateWindow(WC_BUTTON, "Remove", WS_CHILD | WS_VISIBLE | WS_DISABLED, right.pos, a.pos, buttonWidth, a.len, hWnd, (HMENU)idRemoveAppxPackage, NULL, NULL);
+		CreateWindow(WC_LISTVIEW, "", gridDefault, right.pos, b.pos, right.len, b.len, hWnd, (HMENU)idPackageInfo, NULL, NULL);
 
-		Button_Enable(GetDlgItem(hWnd, idRemove), FALSE);
-		Button_Enable(GetDlgItem(hWnd, idLoadUpdates), FALSE);
+		auto [e, f] = DivideSegment(right, Absolute{ buttonWidthLong }, Absolute{ buttonWidthLong });
+		CreateWindow(WC_BUTTON, "Load Updates", WS_CHILD | WS_VISIBLE | WS_DISABLED, e.pos, c.pos, e.len, c.len, hWnd, (HMENU)idLoadPackageUpdates, NULL, NULL);
+		CreateWindow(WC_BUTTON, "Install Update", WS_CHILD | WS_VISIBLE | WS_DISABLED, f.pos, c.pos, f.len, c.len, hWnd, (HMENU)idAddAppxPackage, NULL, NULL);
 
-		SendMessage(hWnd, WM_COMMAND, MAKEWPARAM(idUpdate, BN_CLICKED), reinterpret_cast<LPARAM>(GetDlgItem(hWnd, idUpdate)));
+		CreateWindow(WC_LISTVIEW, "", gridSingleRow, right.pos, d.pos, right.len, d.len, hWnd, (HMENU)idPackageUpdates, NULL, NULL);
 
+		HMENU hSysMenu = GetSystemMenu(hWnd, FALSE);
+		AppendMenu(hSysMenu, MF_SEPARATOR, 0, nullptr);
+		AppendMenu(hSysMenu, MF_STRING, ID_GET_APPX_PACKAGE, "Update Packages List");
+
+		SendMessage(hWnd, WM_GET_APPX_PACKAGE, 0, 0);
+
+		break;
+	}
+	case WM_SYSCOMMAND:
+	{
+		switch (LOWORD(wParam))
+		{
+		case ID_GET_APPX_PACKAGE:
+		{
+			SendMessage(hWnd, WM_GET_APPX_PACKAGE, 0, 0);
+			break;
+		}
+		default:
+			return DefWindowProc(hWnd, msg, wParam, lParam);
+		}
 		break;
 	}
 	case WM_COMMAND:
 	{
-		int wmId = LOWORD(wParam);
-
-		switch (wmId)
+		switch (LOWORD(wParam))
 		{
-		case idUpdate:
+		case idRemoveAppxPackage:
 		{
-			packageList = ParseJson(GetAppxPackage());
-
-			auto pGrid = GetDlgItem(hWnd, idGrid);
-			// Clear all columns and items from the list view control
-			ListView_DeleteAllItems(pGrid);
-			for (auto count = Header_GetItemCount(ListView_GetHeader(pGrid)); count; --count)
+			auto hPackagesList = GetDlgItem(hWnd, idPackagesList);
+			if (auto i = ListView_GetSelectionMark(hPackagesList); i != LB_ERR)
 			{
-				ListView_DeleteColumn(pGrid, 0);
-			}
-
-			// Add columns based on the keys in the first package map
-			if (!packageList.empty())
-			{
-				int i = 0;
-				auto&& lvCol = LV_COLUMN{ .mask = LVCF_FMT | LVCF_WIDTH | LVCF_TEXT | LVCF_SUBITEM, .fmt = LVCFMT_LEFT, .cx = 150 };
-				for (auto&& key : packageList.front() | std::views::keys)
-				{
-					lvCol.pszText = va(key);
-					ListView_InsertColumn(pGrid, i++, &lvCol);
-				}
-			}
-			// Add items to the list view control based on packageList
-			for (int iCol = 0; iCol < packageList.size(); iCol++)
-			{
-				auto&& package = packageList[iCol];
-				for (int iRow = 0; auto && value : package | std::views::values)
-				{
-					if (iRow == 0)
-					{
-						auto&& lv = LVITEM{ .mask = LVIF_TEXT, .iItem = iCol, .iSubItem = iRow, .pszText = va(value) };
-						ListView_InsertItem(pGrid, &lv);
-					}
-					else
-					{
-						ListView_SetItemText(pGrid, iCol, iRow, value.data());
-					}
-					++iRow;
-				}
-			}
-			// Resize the columns to fit the contents
-			int colCount = Header_GetItemCount(ListView_GetHeader(pGrid));
-			for (int i = 0; i < colCount; i++)
-			{
-				ListView_SetColumnWidth(pGrid, i, LVSCW_AUTOSIZE);
-			}
-
-			break;
-		}
-		case idRemove:
-		{
-			auto pGrid = GetDlgItem(hWnd, idGrid);
-			if (auto i = ListView_GetSelectionMark(pGrid); i != LB_ERR)
-			{
-				RemoveAppxPackage(packageList[i][colName.data()]);
+				auto&& valueAsStr = std::format("{}", packageList[i][colName.data()]);
+				RemoveAppxPackage(valueAsStr);
 				// Remove the selected item from the list
-				ListView_DeleteItem(pGrid, i);
+				ListView_DeleteItem(hPackagesList, i);
 				packageList.erase(packageList.begin() + i);
 			}
 			break;
 		}
-		case idLoadUpdates:
+		case idLoadPackageUpdates:
 		{
-			auto pGrid = GetDlgItem(hWnd, idGrid);
-			if (auto i = ListView_GetSelectionMark(pGrid); i != LB_ERR)
+			if (auto i = ListView_GetSelectionMark(GetDlgItem(hWnd, idPackagesList)); i != LB_ERR)
 			{
-				auto hList = GetDlgItem(hWnd, idList);
-				ListBox_ResetContent(hList);
 				auto&& package = packageList[i];
-				auto&& json = LoadUpdates(package[colPackageFamilyName.data()]);
-				auto&& fileNamesToLinks = ParseJson2(json);
-				for (auto&& fileNames : fileNamesToLinks | std::views::keys)
-					ListBox_AddString(hList, fileNames.c_str());
-				updates[package[colName.data()]] = std::move(fileNamesToLinks);
+				auto&& strPackageFamilyName = std::format("{}", package[colPackageFamilyName.data()]);
+				auto&& json = LoadUpdates(strPackageFamilyName);
+				auto&& fileNamesToLinks = ParseJson2(json) | std::views::filter([](auto&& v) { return !v.first.ends_with(".BlockMap"); });
+				auto&& strName = std::format("{}", package[colName.data()]);
+				auto&& update = updates[strName];
+				update = std::vector(fileNamesToLinks.begin(), fileNamesToLinks.end());
+
+				std::vector<std::vector<std::string>> table;
+				for (auto&& view : std::as_const(update) | std::views::keys)
+					table.emplace_back(std::vector({ view }));
+
+				Button_Enable(GetDlgItem(hWnd, idLoadPackageUpdates), FALSE);
+				Button_Enable(GetDlgItem(hWnd, idAddAppxPackage), FALSE);
+				auto hPackageUpdates = GetDlgItem(hWnd, idPackageUpdates);
+				ui::ListView_Reset(hPackageUpdates);
+				ui::ListView_CreateColumns(hPackageUpdates, { "" });
+				ui::ListView_AppendRow(hPackageUpdates, std::move(table));
+				ui::ListView_SetAutoSize(hPackageUpdates);
+			}
+			break;
+		}
+		case idAddAppxPackage:
+		{
+			if (auto i = ListView_GetSelectionMark(GetDlgItem(hWnd, idPackagesList)); i != LB_ERR)
+			{
+				auto&& package = packageList[i];
+				auto&& strName = std::format("{}", package[colName.data()]);
+				auto&& update = updates[strName];
+
+				if (auto j = ListView_GetSelectionMark(GetDlgItem(hWnd, idPackageUpdates)); j != LB_ERR)
+				{
+					auto&& [text, href] = update[j];
+					auto str = AddAppxPackage(href);
+					if (!str.empty())
+						MessageBox(nullptr, str.c_str(), __FUNCTION__, 0);
+				}
 			}
 			break;
 		}
@@ -279,39 +377,92 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	}
 	case WM_SIZE:
 	{
-		int width = LOWORD(lParam);
-		int height = HIWORD(lParam);
+		const int width = LOWORD(lParam);
+		const int height = HIWORD(lParam);
 
-		auto [b1, b2, yPos, g2, l1, l2] = DivideSegment(height, margin, 15, buttonHeight, 0.5);
+		auto [left, right] = DivideSegment(Segment{ width }, Relative{ 3 }, Relative{ 7 });
 
-		auto hGrid = GetDlgItem(hWnd, idGrid);
-		MoveWindow(hGrid, 10, yPos, width - 20, g2, TRUE);
-		auto hList = GetDlgItem(hWnd, idList);
-		MoveWindow(hList, 10, l1, width - 20, l2, TRUE);
+		auto [g] = DivideSegment(Segment{ height }, Relative{ 1 });
+		MoveWindow(GetDlgItem(hWnd, idPackagesList), left.pos, g.pos, left.len, g.len, FALSE);
+
+		auto [a, b, c, d] = DivideSegment(Segment{ height }, Absolute{ buttonHeight }, Relative{ 4 }, Absolute{ buttonHeight }, Relative{ 6 });
+		MoveWindow(GetDlgItem(hWnd, idRemoveAppxPackage), right.pos, a.pos, buttonWidth, a.len, FALSE);
+		MoveWindow(GetDlgItem(hWnd, idPackageInfo), right.pos, b.pos, right.len, b.len, FALSE);
+
+		auto [e, f] = DivideSegment(right, Absolute{ buttonWidthLong }, Absolute{ buttonWidthLong });
+		MoveWindow(GetDlgItem(hWnd, idLoadPackageUpdates), e.pos, c.pos, e.len, c.len, FALSE);
+		MoveWindow(GetDlgItem(hWnd, idAddAppxPackage), f.pos, c.pos, f.len, c.len, FALSE);
+
+		MoveWindow(GetDlgItem(hWnd, idPackageUpdates), right.pos, d.pos, right.len, d.len, FALSE);
 		break;
 	}
 	case WM_NOTIFY:
 	{
-		auto lpnmh = reinterpret_cast<LPNMHDR>(lParam);
-		if (lpnmh->idFrom == idGrid && lpnmh->code == LVN_ITEMCHANGED)
+		// ReSharper disable once CppFunctionalStyleCast, CppLocalVariableMayBeConst
+		if (auto lpnmh = (LPNMHDR)lParam; lpnmh->idFrom == idPackagesList && lpnmh->code == LVN_ITEMCHANGED)
 		{
-			auto* pNMLV = reinterpret_cast<NMLISTVIEW*>(lParam);
-			if ((pNMLV->uNewState & LVIS_SELECTED) != 0)
+			if (auto pNMLV = (LPNMLISTVIEW)lParam; (pNMLV->uNewState & LVIS_SELECTED) != 0)
 			{
-				Button_Enable(GetDlgItem(hWnd, idRemove), TRUE);
-				Button_Enable(GetDlgItem(hWnd, idLoadUpdates), TRUE);
-				auto hList = GetDlgItem(hWnd, idList);
-				ListBox_ResetContent(hList);
-				auto&& packageName = packageList[pNMLV->iItem][colName.data()];
-				for (auto&& fileNames : updates[packageName] | std::views::keys)
-					ListBox_AddString(hList, fileNames.c_str());
+				auto&& package = packageList[pNMLV->iItem];
+
+				Button_Enable(GetDlgItem(hWnd, idRemoveAppxPackage), TRUE);
+
+				{
+					auto hPackageInfo = GetDlgItem(hWnd, idPackageInfo);
+					ui::ListView_Reset(hPackageInfo);
+					ui::ListView_CreateColumns(hPackageInfo, { "Key", "Value" });
+
+					std::vector<std::vector<std::string>> table;
+					table.reserve(package.size());
+					for (auto&& [key, value] : package)
+						table.emplace_back(std::vector({ key, std::format("{}", value) }));
+
+					ui::ListView_AppendRow(hPackageInfo, std::move(table));
+					ui::ListView_SetAutoSize(hPackageInfo);
+				}
+				{
+					auto&& packageName = std::format("{}", package[colName.data()]);
+					auto&& update = updates[packageName];
+					std::vector<std::vector<std::string>> table;
+					for (auto&& view : update | std::views::keys)
+						table.emplace_back(std::vector({ view }));
+
+					if (!table.empty())
+					{
+						Button_Enable(GetDlgItem(hWnd, idLoadPackageUpdates), FALSE);
+						Button_Enable(GetDlgItem(hWnd, idAddAppxPackage), FALSE);
+						auto hPackageUpdates = GetDlgItem(hWnd, idPackageUpdates);
+						ui::ListView_Reset(hPackageUpdates);
+						ui::ListView_CreateColumns(hPackageUpdates, { "" });
+						ui::ListView_AppendRow(hPackageUpdates, std::move(table));
+						ui::ListView_SetAutoSize(hPackageUpdates);
+					}
+					else
+					{
+						Button_Enable(GetDlgItem(hWnd, idLoadPackageUpdates), TRUE);
+						Button_Enable(GetDlgItem(hWnd, idAddAppxPackage), FALSE);
+						ui::ListView_Reset(GetDlgItem(hWnd, idPackageUpdates));
+					}
+				}
 			}
 			else
 			{
-				Button_Enable(GetDlgItem(hWnd, idRemove), FALSE);
-				Button_Enable(GetDlgItem(hWnd, idLoadUpdates), FALSE);
-				auto hList = GetDlgItem(hWnd, idList);
-				ListBox_ResetContent(hList);
+				Button_Enable(GetDlgItem(hWnd, idRemoveAppxPackage), FALSE);
+				ui::ListView_Reset(GetDlgItem(hWnd, idPackageInfo));
+				Button_Enable(GetDlgItem(hWnd, idLoadPackageUpdates), FALSE);
+				Button_Enable(GetDlgItem(hWnd, idAddAppxPackage), FALSE);
+				ui::ListView_Reset(GetDlgItem(hWnd, idPackageUpdates));
+			}
+		}
+		else if (lpnmh->idFrom == idPackageUpdates && lpnmh->code == LVN_ITEMCHANGED)
+		{
+			if (auto pNMLV = (LPNMLISTVIEW)lParam; (pNMLV->uNewState & LVIS_SELECTED) != 0)
+			{
+				Button_Enable(GetDlgItem(hWnd, idAddAppxPackage), TRUE);
+			}
+			else
+			{
+				Button_Enable(GetDlgItem(hWnd, idAddAppxPackage), FALSE);
 			}
 		}
 		break;
@@ -327,25 +478,57 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		break;
 	}
 	default:
+	{
+		if (msg == WM_GET_APPX_PACKAGE)
+		{
+			packageList = ParseJson3(GetAppxPackage());
+
+			auto hPackagesList = GetDlgItem(hWnd, idPackagesList);
+			ui::ListView_Reset(hPackagesList);
+
+			// Add columns based on the keys in the first package map
+			if (!packageList.empty())
+				ui::ListView_CreateColumns(hPackagesList, { "" });
+			// Add items to the list view control based on packageList
+
+			std::vector<std::vector<std::string>> table;
+			for (auto& iRow : packageList)
+			{
+				auto&& packageName = std::format("{}", iRow[colName.data()]);
+				table.emplace_back(std::vector({ std::move(packageName) }));
+			}
+			ui::ListView_AppendRow(hPackagesList, std::move(table));
+			// Resize the columns to fit the contents
+			ui::ListView_SetAutoSize(hPackagesList);
+
+			return 0;
+		}
 		return DefWindowProc(hWnd, msg, wParam, lParam);
+	}
 	}
 	return 0;
 }
 
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
-	const WNDCLASSEX wcex = {
+	windowWidth = GetSystemMetrics(SM_CXSCREEN) / 2;
+	windowHeight = GetSystemMetrics(SM_CYSCREEN) / 2;
+	windowX = windowWidth / 2;
+	windowY = windowHeight / 2;
+
+	WNDCLASSEX wcex = {
 		.cbSize = sizeof(WNDCLASSEX),
 		.style = CS_HREDRAW | CS_VREDRAW,
 		.lpfnWndProc = WndProc,
 		.hInstance = hInstance,
-		.hCursor = LoadCursor(NULL, IDC_ARROW),
+		.hCursor = LoadCursor(nullptr, IDC_ARROW),
 		.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1),
 		.lpszClassName = "PackageManagerClass"
 	};
 	RegisterClassEx(&wcex);
 
-	const HWND hWnd = CreateWindow("PackageManagerClass", "AppxPackageCleaner", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, windowWidth, windowHeight, NULL, NULL, hInstance, NULL);
+	HWND hWnd = CreateWindow("PackageManagerClass", "AppxPackageCleaner", WS_OVERLAPPEDWINDOW, windowX, windowY, windowWidth, windowHeight, NULL, NULL, hInstance, NULL);
 	if (!hWnd)
 	{
 		return 1;

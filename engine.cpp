@@ -42,13 +42,13 @@ private:
 // Run a console command, with optional redirection of stdout and stderr to our log
 std::string RunCommand(std::string_view cmd, std::string_view dir, bool log)
 {
-	constexpr DWORD dwPipeSize = 4096*9;
+	constexpr DWORD dwPipeSize = 1 << 16;
 	STARTUPINFO si = { .cb = sizeof(si) };
 	PROCESS_INFORMATION pi = {};
 	PipeHandle hOutputRead;
 	PipeHandle hOutputWrite;
 	std::string output;
-
+	
 	if (log)
 	{
 		SECURITY_ATTRIBUTES sa = { .nLength = static_cast<DWORD>(sizeof sa), .lpSecurityDescriptor = nullptr, .bInheritHandle = TRUE };
@@ -64,13 +64,13 @@ std::string RunCommand(std::string_view cmd, std::string_view dir, bool log)
 		si.hStdOutput = hOutputWrite.get();
 		si.hStdError = hOutputWrite.get();
 	}
-
+	
 	if (!CreateProcess(nullptr, va(cmd), nullptr, nullptr, TRUE, NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW, nullptr, dir.data(), &si, &pi))
 	{
 		SysError(std::format("Unable to launch command '{}': {}", cmd, GetLastError()));
 		return output;
 	}
-
+	
 	if (log)
 	{
 		while (true)
@@ -81,19 +81,12 @@ std::string RunCommand(std::string_view cmd, std::string_view dir, bool log)
 			{
 				if (dwAvail != 0)
 				{
+					std::string buf(static_cast<size_t>(dwAvail + 1), '\0');
 					DWORD dwRead;
-					std::array<char, dwPipeSize> buf{};
-					//output = malloc(dwAvail + 1);
-					//std::unique_ptr<char[]> buf(new char[dwAvail + 1]);
 					if (ReadFile(hOutputRead.get(), buf.data(), dwAvail, &dwRead, nullptr) && dwRead != 0)
 					{
-						//buf[dwAvail] = '\0';
-						// coverity[tainted_string]
-						//uprintf(output);
-						std::string str(buf.begin(), buf.end());
-						output.assign(buf.data(), dwRead);
+						output = std::move(buf);
 					}
-					//free(output);
 				}
 			}
 			if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0)
@@ -105,7 +98,7 @@ std::string RunCommand(std::string_view cmd, std::string_view dir, bool log)
 	{
 		WaitForSingleObject(pi.hProcess, INFINITE);
 	}
-
+	
 	DWORD ret;
 	if (!GetExitCodeProcess(pi.hProcess, &ret))
 		ret = GetLastError();
